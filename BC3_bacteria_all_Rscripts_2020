@@ -1,0 +1,528 @@
+#R script statistical analyses
+#Paper title: "Salinity, water level, and forest structure contribute to baldcypress (Taxodium distichum) 
+#rhizosphere and endosphere community structure"
+#Authors: Candice Y. Lumibao1+,  Elizabeth Kimbrough1+, Stephen Formel1, Richard H. Day2, Andrew S. From2, William H. Conner3, Ken W. Krauss2 and Sunshine A. Van Bael1
+#Journal: Wetlands (2020)
+  
+library(reshape2)
+library(ggplot2)
+library(gridExtra)
+library(cowplot)
+library(vegan)
+library(VennDiagram)
+library(picante)
+library(nlme)
+library(plyr)
+
+#********************************************
+#1. Diversity and Richness, with rarefaction
+#rarefaction done at n =1500
+#********************************************
+#read data
+seq.bac<-read.csv(file="BC3Bacteria_fulldata_unrarefied.csv")
+
+#sum the otus to find the minimum
+seq.bac$colsum<-rowSums(seq.bac[,35:14427])
+
+#--------------------------------------------------------------------------#
+#NOTE: HERE I REMOVED THE SAMPLES THAT WITH LESS THAN 1000 TOTAL OTU COUNTS
+#--------------------------------------------------------------------------#
+#remove samples that are < 1000 out counts total
+seq.bac2<-seq.bac[!seq.bac$colsum < 1000,]
+
+#find minimum
+min(seq.bac2[,14428])
+
+#specify columns containing the OTUs
+sp.cols <- grep("derep_", names(seq.bac2))
+
+#rarefy the community matrix to 1500, add add to a column
+sp.col.rare<-rrarefy(seq.bac2[,sp.cols],1500)
+
+#create new dataframe with sampleinfo merged data
+samp<-seq.bac2[,1:34]
+
+#merge the rarefied matrix with the data info
+merge<-cbind(samp,sp.col.rare)
+
+#write. as table
+write.table(merge, file="BC3Bacteria_fulldata_rarefied_matrix.csv", sep=',', row.names=FALSE)
+
+#--------------------------------------------------------------------------#
+#NOTE: HERE I REMOVED THE SAMPLES THAT WITH LESS THAN 1000 TOTAL OTU COUNTS
+#--------------------------------------------------------------------------#
+
+#add a column
+rare.d<-read.csv(file="BC3Bacteria_fulldata_rarefied_matrix.csv")
+
+
+#specify columns containing the OTUs
+sp.cols <- grep("derep_", names(rare.d))
+
+#add a column
+rare.d$rich.vegan <-specnumber(rare.d[,sp.cols])
+
+#take log of richness
+rare.d$logrich<-log(rare.d$rich.vegan)
+
+#shannon diversity
+rare.d$shan<-diversity(rare.d[,sp.cols], index="shannon")
+
+#log of shannon diversity
+rare.d$logshan<-log(rare.d$shan)
+
+#add to existing file, WIRTE AS NEW TABLE
+
+#####################################################################################
+#THIS IS THE FINAL DATA USED IN SUCCEEDING ANALYSES
+write.table(rare.d, file="BC3Bacteria_fulldata_diversity_rarefied.csv", sep=',', row.names=FALSE)
+
+#FINAL DATA MATRIX WITHOUT THE DIVERSITY METRICS: "BC3Bacteria_fulldata_rarefied_matrix.csv"
+
+#####################################################################################
+
+#calculate mean diversity
+bact.d<-read.csv(file='BC3Bacteria_fulldata_diversity_rarefied.csv')
+
+root.bac<-bact.d[bact.d$Type=="Root",]
+mean(root.bac$shan)
+mean(root.bac$rich.vegan)
+
+soil.bac<-bact.d[bact.d$Type=="Soil" & bact.d$Year=="2015",]
+mean(soil.bac$shan)
+mean(soil.bac$rich.vegan)
+
+
+bac<-rbind(root.bac,soil.bac)
+wilcox.test(shan~Type, data=bac)
+wilcox.test(rich.vegan~Type, data=bac)
+
+******************************
+  2. db-RDA analysis
+******************************
+  
+  #DB-RDA re-analysis
+  #codes follow Steve Formel's
+  library(vegan)
+library(ggplot2)
+library(cowplot)
+
+bact.d<-read.csv(file="BC3Bacteria_fulldata_diversity_rarefied.csv")
+
+#rename "Terrebone" to "Terrebonne" in transect factor
+levels(bact.d$Transect)[levels(bact.d$Transect)=="Terrebone"] <- "Terrebonne"
+
+#********************************#
+# ROOT #
+#********************************#
+
+#select for root data
+root.bac<-bact.d[bact.d$Type=="Root",]
+
+#names(root.bac)[names(root.bac)=="WoodyCov_z"]<-"Woody Debris Volume"
+
+#make species matrix
+sp.cols.rt <- grep("derep_", names(root.bac))
+
+# Make Bray Curtis dissimilarity matrix 
+BC3.root.mat<-vegdist((root.bac[,sp.cols.rt]), method="bray", binary=FALSE)
+
+#dbrda with all environmental data
+#FullModel
+dbRDA_all <- capscale(BC3.root.mat ~ WoodyCov_z+TreeDensity_2014_z+WaterLevel_z+MeanSal_6mo_z, 
+                      data=root.bac)
+
+#Null Model
+#generate one model with NOTHING to explain the braycurtis dm matrix
+dbRDAnull_BC3 <- capscale(BC3.root.mat~1,data=root.bac)
+
+#use forward selection to choose which elements of the full model explain a significant amount of variaiton in the unifrac dm by comparing it to the null
+dbRDA_forsel <- ordistep(dbRDAnull_BC3,scope=formula(dbRDA_all),
+                         direction="forward",Pin=.1,trace=T,pstep=500000)
+dbRDA_forsel
+
+anova(dbRDA_forsel, by="margin") # check significance of main factors
+
+#check model fit
+anova(dbRDA_forsel)
+
+#make model sumary
+B <- summary(dbRDA_forsel)
+
+#plot using ggplot2
+plot(dbRDA_forsel)
+A.1 <- scores(dbRDA_forsel)
+A.2 <- A.1$sites
+A.3 <- cbind(A.2, root.bac)
+
+#reorder Transect levels to make plotting easier
+A.3$Transect <- factor(A.3$Transect, levels = c("Barataria", "Terrebonne", "Savannah","Waccamaw"))
+
+#scores for arows
+A.4 <- data.frame(scores(dbRDA_forsel, display = "bp"))
+
+# Define the arrow aesthetic mapping
+arrow_map <- aes(xend = CAP1, yend = CAP2, x = 0, y = 0, shape = NULL, color = NULL, fill = NULL)
+label_map <- aes(x = 1*CAP1, y = 1*CAP2, label = row.names(A.4), shape = NULL, color = NULL, fill = NULL)
+arrowhead = arrow(length = unit(0.02, "npc"))
+
+#subset A4 for labeling
+A.4 <- A.4[sort(rownames(A.4)),]
+A4.sub1 <- A.4[3:4,]
+A4.sub2 <- A.4[1,]
+A4.sub3 <- A.4[2,]
+
+#make plot
+p <- ggplot(data = A.3, aes(x = CAP1, y = CAP2))
+
+p.dbrda.roots <- p +
+  geom_point(data = A.3, alpha = 2/5, 
+             aes(shape = Transect), size = rel(3), color = "black", stroke = 1) +
+  theme_bw() + 
+  geom_segment(arrow_map, size = rel(0.7), data = A.4, color = "black", arrow = arrowhead) +
+  geom_text(label_map, size = rel(3), data = A4.sub1, show.legend = FALSE, hjust = 0.8, label = c("Water Level", "Woody Debris"), nudge_y = -0.1) +
+  geom_text(label_map, size = rel(3), data = A4.sub2, show.legend = FALSE, hjust = -0.1, label = c("Mean Salinity"), nudge_y = -0.1) +
+  geom_text(label_map, size = rel(3), data = A4.sub3, show.legend = FALSE, hjust = -0.1, label = c("Tree Density"), nudge_y = 0.1) +
+  xlab(label = paste("CAP1 (", round(B$concont$importance[2,1]*100, digits = 1), "%)", sep="")) +
+  ylab(label = paste("CAP2 (", round(B$concont$importance[2,2]*100, digits = 1), "%)", sep="")) +
+  scale_shape_manual(name = "Transect/Gradient", labels = c("Barataria (LA)", "Terrebonne (LA)", "Savannah (GA)", "Waccamaw (SC)"), values = c(21,23,15,17))
+
+#ggtitle("dbRDA of Roots")
+p.dbrda.roots
+ggsave(filename="Figure3_dbrda_roots_bacteria.tiff", plot=p.dbrda.roots, dpi=600, units=c("mm"), width=110, height=100)
+
+#********************************#
+# SOIL #
+#********************************#
+#select for SOIL data
+soil.bac<-bact.d[bact.d$Type=="Soil" & bact.d$Year=="2015",]
+
+#make species matrix
+sp.cols.soil <- grep("derep_", names(soil.bac))
+
+# Make Bray Curtis dissimilarity matrix 
+BC3.soil.mat<-vegdist((soil.bac[,sp.cols.soil]), method="bray", binary=FALSE)
+
+#dbrda with all environmental data
+#Lat+Long+Degradation+HistTidal+WoodyCov_z+ForestCover_z+TreeDensity_2014_z+PlotDensity_z+ForestHeight_z+...+MeanTemp_6mo_z+
+#FullModel
+dbRDA_all.soil <- capscale(BC3.soil.mat ~ WoodyCov_z+TreeDensity_2014_z+WaterLevel_z+MeanSal_6mo_z, 
+                           data=soil.bac)
+
+#Null Model
+#generate one model with NOTHING to explain the braycurtis dm matrix
+dbRDAnull_BC3.soil <- capscale(BC3.soil.mat~1,data=soil.bac)
+
+#use forward selection to choose which elements of the full model explain a significant amount of variaiton in the unifrac dm by comparing it to the null
+
+dbRDA_forsel.soil <- ordistep(dbRDAnull_BC3.soil,scope=formula(dbRDA_all.soil),
+                              direction="forward",Pin=.1,trace=T,pstep=500000)
+
+dbRDA_forsel.soil
+summary(dbRDA_forsel.soil)
+anova(dbRDA_forsel.soil, by="margin")
+anova(dbRDA_forsel.soil)
+anova(dbRDA_forsel.soil, by="axis", perm.max=500) 
+#===============#
+#PLOT
+#===============#
+#any rid of NA values?
+
+anyNA(soil.bac)
+
+#make model sumary
+B <- summary(dbRDA_forsel.soil)
+
+#plot
+A.1 <- scores(dbRDA_forsel.soil)
+A.2 <- A.1$sites
+A.3 <- cbind(A.2, soil.bac)
+
+#reorder Transect levels to make plotting easier
+A.3$Transect <- factor(A.3$Transect, levels = c("Barataria", "Terrebonne", "Savannah","Waccamaw"))
+
+#scores for arows
+A.4 <- data.frame(scores(dbRDA_forsel.soil, display = "bp"))
+
+#remove the tree density since it is not significant
+A.4.no_TD <- A.4[c(1,2,3),]
+A.4 <- A.4.no_TD
+
+# Define the arrow aesthetic mapping
+arrow_map <- aes(xend = CAP1, yend = CAP2, x = 0, y = 0, shape = NULL, color = NULL, fill = NULL)
+label_map <- aes(x = 1*CAP1, y = 1*CAP2, label = row.names(A.4), shape = NULL, color = NULL, fill = NULL)
+arrowhead = arrow(length = unit(0.02, "npc"))
+
+#subset A4 for labeling
+A.4 <- A.4[sort(rownames(A.4)),]
+A4.sub1 <- A.4[2,]
+A4.sub2 <- A.4[1,]
+A4.sub3 <- A.4[3,]
+
+#make plot
+p <- ggplot(data = A.3, aes(x = CAP1, y = CAP2))
+
+p.dbrda.soil <- p +
+  geom_point(data = A.3, alpha = 2/5, 
+             aes(shape = Transect), size = rel(3), color = "black", stroke = 1) +
+  theme_bw() + 
+  geom_segment(arrow_map, size = rel(0.7), data = A.4, color = "black", arrow = arrowhead) +
+  geom_text(label_map, size = rel(3), data = A4.sub1, show.legend = FALSE, hjust = 1, label = c("Water Level"), nudge_y = -0.15) +
+  geom_text(label_map, size = rel(3), data = A4.sub2, show.legend = FALSE, hjust = 0.8, label = c("Mean Salinity"), nudge_y = 0.15) +
+  geom_text(label_map, size = rel(3), data = A4.sub3, show.legend = FALSE, hjust = 0.1, label = c("Woody Debris"), nudge_y = -0.2) +
+  xlab(label = paste("CAP1 (", round(B$concont$importance[2,1]*100, digits = 1), "%)", sep="")) +
+  ylab(label = paste("CAP2 (", round(B$concont$importance[2,2]*100, digits = 1), "%)", sep="")) +
+  scale_shape_manual(name = "Transect/Gradient", labels = c("Barataria (LA)", "Terrebonne (LA)", "Savannah (GA)", "Waccamaw (SC)"), 
+                     values = c(21,23,15,17))
+p.dbrda.soil
+ggsave(filename="Figure3_dbrda_soil_bacteria.tiff", plot=p.dbrda.soil, dpi=600, units=c("mm"), width=120, height=100)
+
+************************************
+  #********************************************#
+  #Distance-based
+  #********************************************#
+  
+  #^^^^^^^^^^^^^^^^^^^^#
+  #1. ROOT
+  #^^^^^^^^^^^^^^^^^^^^#
+  
+  bact.d<-read.csv(file="BC3Bacteria_fulldata_diversity_rarefied.csv")
+
+#rename "Terrebone" to "Terrebonne" in transect factor
+levels(bact.d$Transect)[levels(bact.d$Transect)=="Terrebone"] <- "Terrebonne"
+
+#select for root data
+root.bac<-bact.d[bact.d$Type=="Root",]
+
+#aggregate by plot level since we only have GPS coordinate at this level
+root.agg<-aggregate(.~PlotName+Lat+Long+Site+Transect+MeanSal_6mo+WaterLevel+MeanSal_6mo_z+WaterLevel_z, 
+                    data=root.bac, sum)
+
+#dave file
+write.table(root.agg, file="BC3_bacteria_plot_aggregate_root.csv", sep=',', row.names=FALSE)
+
+#read in the new file
+bacdist.rt<-read.csv(file="BC3_bacteria_plot_aggregate_root.csv")
+
+#rename the root and soil as endosphere and rhizosphere
+levels(bacdist.rt$Type)[levels(bacdist.rt$Type)=="Root"] <- "Endosphere"
+
+#specify column 
+Long=bacdist.rt$Long
+Lat=bacdist.rt$Lat
+
+#calculate physical distance, make sure that the order
+#is Longitude first, them Latitude and in degrees
+#default is meters
+geodist<-distm(cbind(Long, Lat), fun = distGeo) 
+geodist2<-as.dist(log(geodist/1000),diag = FALSE, upper = FALSE) 
+
+#make species matrix
+sp.cols.rt <- grep("derep_", names(bacdist.rt))
+
+# Make Bray Curtis dissimilarity matrix 
+BC3.root.mat<-vegdist((bacdist.rt[,sp.cols.rt]), method="bray", binary=FALSE)
+
+#include other distance matrices to account for soil and other environmental properties
+
+#salinity
+sal.dist<-dist(bacdist.rt$MeanSal_6mo, method="euclidean")
+
+#water level
+h20.dist<-dist(bacdist.rt$WaterLevel, method="euclidean")
+
+#based on multiple regression on matrices
+MRM(BC3.root.mat~geodist2 +sal.dist+h20.dist, nperm = 1000, method = "linear")
+
+#without teh other factors
+MRM(BC3.root.mat~geodist2, nperm = 1000, method = "linear")
+
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^#
+#SOIL
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^#
+bact.d<-read.csv(file="BC3Bacteria_fulldata_diversity_rarefied.csv")
+
+#rename "Terrebone" to "Terrebonne" in transect factor
+levels(bact.d$Transect)[levels(bact.d$Transect)=="Terrebone"] <- "Terrebonne"
+
+#select for root data
+soil.bac<-bact.d[bact.d$Type=="Soil" & bact.d$Year=="2015",]
+
+#aggregate by plot level since we only have GPS coordinate at this level
+soil.agg<-aggregate(.~PlotName+Lat+Long+Site+Transect+MeanSal_6mo+WaterLevel+MeanSal_6mo_z+WaterLevel_z, 
+                    data=soil.bac, sum)
+
+#dave file
+write.table(soil.agg, file="BC3_bacteria_plot_aggregate_soil.csv", sep=',', row.names=FALSE)
+
+#********************#
+#conduct MRM 
+#read in the new file
+#********************#
+bacdist.soil<-read.csv(file="BC3_bacteria_plot_aggregate_soil.csv")
+
+#rename the root and soil as endosphere and rhizosphere
+levels(bacdist.soil$Type)[levels(bacdist.soil$Type)=="Root"] <- "Endosphere"
+
+#specify column 
+Long=bacdist.soil$Long
+Lat=bacdist.soil$Lat
+
+geodist<-distm(cbind(Long, Lat), fun = distGeo) 
+geodist2<-as.dist(log(geodist/1000),diag = FALSE, upper = FALSE) 
+
+#make species matrix
+sp.cols.rt <- grep("derep_", names(bacdist.soil))
+
+# Make Bray Curtis dissimilarity matrix 
+BC3.soil.mat<-vegdist((bacdist.soil[,sp.cols.rt]), method="bray", binary=FALSE)
+
+#include other distance matrices to account for soil and other environmental properties
+
+#salinity
+sal.dist<-dist(bacdist.soil$MeanSal_6mo, method="euclidean")
+
+#water level
+h20.dist<-dist(bacdist.soil$WaterLevel, method="euclidean")
+
+#based on multiple regression on matrices
+MRM(BC3.soil.mat~geodist2 +sal.dist+h20.dist, nperm = 1000, method = "linear")
+
+#without the other factors
+#MRM(BC3.soil.mat~geodist2, nperm = 1000, method = "linear")
+
+
+#============================================#
+#PLOT MRM RESULTS RHIZOSPHERE
+#============================================#
+
+#make plots
+plot(x=geodist2, y=BC3.soil.mat, pch=2)
+abline(lm(BC3.soil.mat~geodist2), col="black") 
+
+#make ggplot-----
+
+#convert dist matrices to pairwise lists
+
+gdist.list <- data.frame(t(combn(rownames(x),2)), as.numeric(geodist2))
+names(gdist.list) <- c("c1", "c2", "geo_distance")
+
+UFdist.list <- data.frame(t(combn(rownames(x),2)), as.numeric(BC3.soil.mat))
+names(UFdist.list) <- c("c1", "c2", "UF_distance")
+
+which(UFdist.list$c1!=gdist.list$c1)
+which(UFdist.list$c2!=gdist.list$c2)
+
+dist.df <- data.frame("plot1" = UFdist.list$c1, "plot2" = UFdist.list$c2, "geo_dist" = gdist.list$geo_distance, "UF_dist" = UFdist.list$UF_distance)
+
+PW.comps <- with(dist.df, ifelse((plot1=="BC" | plot1=="BM" | plot1=="BT") & (plot2=="FL" | plot2=="TI" | plot2=="JL"), "Terr-Barr",
+                                 ifelse((plot1=="BC" | plot1=="BM" | plot1=="BT") & (plot2=="SL" | plot2=="SM" | plot2=="SU"), "Terr-Sav",
+                                        ifelse((plot1=="BC" | plot1=="BM" | plot1=="BT") & (plot2=="WL" | plot2=="WM" | plot2=="WU"), "Terr-Wac", 
+                                               ifelse((plot1=="FL" | plot1=="TI" | plot1=="JL") & (plot2=="SL" | plot2=="SM" | plot2=="SU"), "Barr-Sav", 
+                                                      ifelse((plot1=="FL" | plot1=="TI" | plot1=="JL") & (plot2=="WL" | plot2=="WM" | plot2=="WU"), "Barr-Wac", 
+                                                             ifelse((plot1=="SL" | plot1=="SM" | plot1=="SU") & (plot2=="WL" | plot2=="WM" | plot2=="WU"), "Sav-Wac", 
+                                                                    ifelse((plot1=="FL" | plot1=="TI" | plot1=="JL") & (plot2=="BC" | plot2=="BM" | plot2=="BT"), "Terr-Barr",
+                                                                           ifelse((plot1=="SL" | plot1=="SM" | plot1=="SU") & (plot2=="BC" | plot2=="BM" | plot2=="BT"), "Terr-Barr",
+                                                                                  ifelse((plot1=="JL" | plot1=="TI" | plot1=="FL") & (plot2=="JL" | plot2=="TI" | plot2=="FL"), "Barr-Barr",
+                                                                                         ifelse((plot1=="SU" | plot1=="SL" | plot1=="SM") & (plot2=="SU" | plot2=="SL" | plot2=="SM"), "Sav-Sav",
+                                                                                                ifelse((plot1=="BC" | plot1=="BM" | plot1=="BT") & (plot2=="BC" | plot2=="BM" | plot2=="BT"), "Terr-Terr",
+                                                                                                       ifelse((plot1=="WL" | plot1=="WM" | plot1=="WU") & (plot2=="WL" | plot2=="WM" | plot2=="WU"), "Wac-Wac", "Failed")))))))))))))
+
+PW.comps
+dist.df[PW.comps=="Failed",]
+
+dist.df$PW.comps <- PW.comps
+
+#make pairwise by state
+PW.comps.state <- with(dist.df, ifelse((plot1=="BC" | plot1=="BM" | plot1=="BT") & (plot2=="FL" | plot2=="TI" | plot2=="JL"), "LA-LA",
+                                       ifelse((plot1=="BC" | plot1=="BM" | plot1=="BT") & (plot2=="SL" | plot2=="SM" | plot2=="SU"), "Terr-Sav",
+                                              ifelse((plot1=="BC" | plot1=="BM" | plot1=="BT") & (plot2=="WL" | plot2=="WM" | plot2=="WU"), "LA-SC", 
+                                                     ifelse((plot1=="FL" | plot1=="TI" | plot1=="JL") & (plot2=="SL" | plot2=="SM" | plot2=="SU"), "LA-GA", 
+                                                            ifelse((plot1=="FL" | plot1=="TI" | plot1=="JL") & (plot2=="WL" | plot2=="WM" | plot2=="WU"), "LA-SC", 
+                                                                   ifelse((plot1=="SL" | plot1=="SM" | plot1=="SU") & (plot2=="WL" | plot2=="WM" | plot2=="WU"), "GA-SC", 
+                                                                          ifelse((plot1=="FL" | plot1=="TI" | plot1=="JL") & (plot2=="BC" | plot2=="BM" | plot2=="BT"), "LA-LA",
+                                                                                 ifelse((plot1=="SL" | plot1=="SM" | plot1=="SU") & (plot2=="BC" | plot2=="BM" | plot2=="BT"), "LA-LA",
+                                                                                        ifelse((plot1=="JL" | plot1=="TI" | plot1=="FL") & (plot2=="JL" | plot2=="TI" | plot2=="FL"), "LA-LA",
+                                                                                               ifelse((plot1=="SU" | plot1=="SL" | plot1=="SM") & (plot2=="SU" | plot2=="SL" | plot2=="SM"), "GA-GA",
+                                                                                                      ifelse((plot1=="BC" | plot1=="BM" | plot1=="BT") & (plot2=="BC" | plot2=="BM" | plot2=="BT"), "LA-LA",
+                                                                                                             ifelse((plot1=="WL" | plot1=="WM" | plot1=="WU") & (plot2=="WL" | plot2=="WM" | plot2=="WU"), "SC-SC", "Failed")))))))))))))
+
+PW.comps.state
+
+dist.df$PW.comps.state <- PW.comps.state
+
+#calculate coefficients for abline
+CF <- coef(lm(BC3.soil.mat~geodist2))
+
+library(ggplot2)
+
+MRM_plot <- ggplot(data = dist.df, aes(x = geo_dist, y = UF_dist, shape = PW.comps.state)) +
+  geom_point(size = (rel(4))) +
+  geom_abline(slope = CF[2], intercept = CF[1]) +
+  theme_bw() +
+  theme(axis.title = element_text(size=14)) +
+  xlab("Geographic Distance log(km)") +
+  ylab("Bray-Curtis Distance") +
+  guides(shape=guide_legend(title=NULL))
+
+MRM_plot
+#save file
+ggsave("MRM_Soil/MRM_plot_6Feb2020.png", height = 8, width = 8, units = "in")
+
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^#
+#PERMANOVA at taxonomic levels
+#^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^#
+#Root Class
+class.d<-read.csv(file="BC3Bacteria_fulldata_class.csv")
+class.root<-class.d[class.d$Type== "Root",]
+spp.root<-grep("c__",names(class.root)) ## list all variables
+cls.root.mat<-class.root[,spp.root]
+#adonis(cls.root.mat~WoodyCov_z+TreeDensity_2014_z+WaterLevel_z*MeanSal_6mo_z, 
+#       method='bray', strata=class.root$Transect, data=class.root, permutations=1000)
+
+adonis(cls.root.mat~Transect+WoodyCov_z+TreeDensity_2014_z+WaterLevel_z*MeanSal_6mo_z, 
+       method='bray', strata=class.root$Transect, data=class.root, permutations=1000)
+
+#ROOT ORDER
+order.d<-read.csv(file="BC3Bacteria_fulldata_order.csv")
+ord.root<-order.d[order.d$Type== "Root",]
+spp.root.ord<-grep("o__",names(ord.root)) ## list all variables
+ord.root.mat<-ord.root[,spp.root.ord]
+adonis(ord.root.mat~WoodyCov_z+TreeDensity_2014_z+WaterLevel_z*MeanSal_6mo_z, 
+       method='bray', strata=ord.root$Transect, data=ord.root, permutations=1000)
+
+adonis(ord.root.mat~Transect+WoodyCov_z+TreeDensity_2014_z+WaterLevel_z*MeanSal_6mo_z, 
+       method='bray', strata=ord.root$Transect, data=ord.root, permutations=1000)
+
+#ROOT FAMILY
+fam.d<-read.csv(file="BC3Bacteria_fulldata_family.csv")
+fam.root<-fam.d[fam.d$Type== "Root",]
+spp.root.fam<-grep("f__",names(fam.root)) ## list all variables
+fam.root.mat<-fam.root[,spp.root.fam]
+adonis(fam.root.mat~WoodyCov_z+TreeDensity_2014_z+WaterLevel_z*MeanSal_6mo_z, 
+       method='bray', strata=fam.root$Transect, data=fam.root, permutations=1000)
+
+#SOIL CLASS
+class.d<-read.csv(file="BC3Bacteria_fulldata_class.csv")
+class.soil<-class.d[class.d$Type== "Soil" &class.d$Year== "2015",]
+spp.soil<-grep("c__",names(class.soil)) ## list all variables
+cls.soil.mat<-class.soil[,spp.soil]
+adonis(cls.soil.mat~Transect+WoodyCov_z+TreeDensity_2014_z+WaterLevel_z*MeanSal_6mo_z, 
+       method='bray', strata=class.soil$Transect, data=class.soil, permutations=1000)
+
+#SOIL ORDER
+order.d<-read.csv(file="BC3Bacteria_fulldata_order.csv")
+ord.soil<-order.d[order.d$Type== "Soil" &order.d$Year== "2015",]
+spp.soil.ord<-grep("o__",names(ord.soil)) ## list all variables
+ord.soil.mat<-ord.soil[,spp.soil.ord]
+adonis(ord.soil.mat~Transect+WoodyCov_z+TreeDensity_2014_z+WaterLevel_z*MeanSal_6mo_z, 
+       method='bray', strata=ord.soil$Transect, data=ord.soil, permutations=1000)
+
+
+#SOIL FAMILY
+fam.d<-read.csv(file="BC3Bacteria_fulldata_family.csv")
+fam.soil<-fam.d[fam.d$Type== "Soil" & fam.d$Year== "2015",]
+spp.soil.fam<-grep("f__",names(fam.soil)) ## list all variables
+fam.soil.mat<-fam.soil[,spp.soil.fam]
+adonis(fam.soil.mat~Transect+WoodyCov_z+TreeDensity_2014_z+WaterLevel_z*MeanSal_6mo_z, 
+       method='bray', strata=fam.soil$Transect, data=fam.soil, permutations=1000)
